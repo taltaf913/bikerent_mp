@@ -1,36 +1,103 @@
-# This is a basic workflow to help you get started with Actions
-
-name: CI
-
-# Controls when the workflow will run
+name: Push a Docker Image
 on:
-  # Triggers the workflow on push or pull request events but only for the "master" branch
   push:
-    branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
-
-  # Allows you to run this workflow manually from the Actions tab
+    branches:
+      - master
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
+  train:
     runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
+    strategy:
+      fail-fast: false
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v3
+    - uses: actions/checkout@v3
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.10'
+    - name: Install dependencies
+      run: pip install -r requirements/requirements.txt
+    - name: Train and save pipeline
+      run: python bikeshare_model/train_pipeline.py
+    - uses: actions/upload-artifact@v2
+      with:
+        name: my-trained-pipeline
+        path: bikeshare_model/trained_models/*.pkl
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
+  test:
+    needs: train
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.10'
+    - uses: actions/download-artifact@v2
+      with:
+        name: my-trained-pipeline
+    - run: mv *.pkl bikeshare_model/trained_models/
+    - name: Install dependencies
+      run: pip install -r requirements/test_requirements.txt
+    - name: Test with pytest
+      run: pytest
 
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
-        run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+  build:
+    needs: [train, test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.10'
+    - uses: actions/download-artifact@v2
+      with:
+        name: my-trained-pipeline
+    - run: mv *.pkl bikeshare_model/trained_models/
+    - name: Install dependencies
+      run: pip install --upgrade build
+    - name: Build package
+      run: python -m build
+    - uses: actions/upload-artifact@v2
+      with:
+        name: my-build-package
+        path: dist/*.whl
+
+  push-image:
+    needs: [train, test, build]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Repo Checkout
+      uses: actions/checkout@v2
+
+    - uses: actions/download-artifact@v2
+      with:
+        name: my-build-package
+    - run: mv *.whl bikeshare_model_api/
+
+    - name: Login to Docker hub
+      env:
+        DOCKER_USER: ${{ secrets.DOCKER_USER_NAME }}
+        DOCKER_PASSWORD: ${{ secrets.DOCKER_PASS_TOKEN }}
+      run: docker login -u $DOCKER_USER -p $DOCKER_PASSWORD
+
+
+    - name: Build the Docker image for Fastapi app
+      env:
+        DOCKER_USER: ${{ secrets.DOCKER_USER_NAME }}
+      run: docker build . -f Dockerfile -t $DOCKER_USER/bikeshare-fastapi:latest-1
+
+    - name: Push the Docker Image
+      env:
+        DOCKER_USER: ${{ secrets.DOCKER_USER_NAME }}
+      #run: docker push $DOCKER_USER/bikeshare-fastapi
+      run: docker push $DOCKER_USER/bikeshare-fastapi:latest-1
+
+    - name: Logout to Docker hub
+      run: docker logout
