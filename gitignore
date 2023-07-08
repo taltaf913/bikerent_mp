@@ -1,0 +1,6 @@
+venv/*
+*310*.pyc
+*.pkl
+*-info
+*.whl
+*.gz
